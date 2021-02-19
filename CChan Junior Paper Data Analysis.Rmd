@@ -1,0 +1,286 @@
+---
+title: "JP Data Analysis 2"
+author: "Chesley Chan"
+date: "5/1/2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	fig.pos = "h"
+)
+options(digits = 3)
+set.seed(1234567)
+```
+
+```{r suppress, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, suppressMessages(library(dplyr)), suppressMessages(library(stargazer)), suppressMessages(library(kableExtra)), suppressMessages(library(sjPlot)))
+```
+
+```{r load_packages, echo = FALSE, include = FALSE}
+library(tidyverse)
+library(stargazer)
+library(kableExtra)
+library(MASS)
+library(janitor)
+library(jtools)
+library(cobalt)
+library(CBPS)
+library(skimr)
+library(gridExtra)
+library(naniar)
+library(haven)
+library(dplyr)
+library(foreign)
+library(knitr)
+library(ggplot2)
+library(sjPlot)
+library(tinytex)
+library(jtools)
+
+set.seed(1234567)
+```
+
+```{r load and wrangle program data}
+# poverty alleviation program, book 1c
+# load dataset bk1_pap1.dta
+cdata_bk1_pap1<- read_dta("bk1_pap1.dta")
+cdata_program <- cdata_bk1_pap1 %>% 
+  dplyr::select(ea,    # enumeration area (categorical)
+         commid14,     # community id (categorical)
+         pap1type,     # poverty alleviation program type (categorical)
+         pap7,         # Was there [...] program in this village since 2007? (numeric, 1: yes, 3: no)
+         pap7c,        # Is the program still running? (numeric, 1: yes, 3: no, 8: don't know)
+         pap8) %>%    # What % of households were recipients/participants of the program? (numeric, 1. └─┴─┴─┘%, 8. DON’T KNOW)
+  dplyr::rename(cid = commid14) 
+  
+
+# create control variable - total # of poverty alleviation programs participated in (other than PKH)
+cdata_progcontrol <- cdata_program %>% 
+  mutate(pap7, pap7 = case_when(pap7 == 3 ~ 0, #"no", 
+                                pap7 == 1 ~ 1, #"yes",
+                                TRUE ~ as.numeric(NA))) %>% 
+  dplyr::select(-pap7c) %>% 
+  dplyr::select(-pap8) %>% 
+  spread(pap1type, value = pap7) %>% 
+  dplyr::select(-"7") 
+
+cdata_progcontrol["otherprog_sum"] <- apply(cdata_progcontrol[3:21], 1, sum, na.rm = TRUE)
+#cdata_progcontrol["otherprog_or_not"] <- as.integer(apply(cdata_progcontrol[3:21], 1, any, na.rm = TRUE))
+
+cdata_progcontrol <- cdata_progcontrol %>% 
+  dplyr::select(ea, cid, otherprog_sum)
+
+# only analyze responses about PKH
+cdata_program <- cdata_program %>%
+  filter(pap1type == 7) %>%
+  dplyr::select(-pap1type)
+
+# rename cdata_program1 variables
+cdata_program <- cdata_program %>%  
+  dplyr::rename(pkh_since07 = pap7) %>% 
+  dplyr::rename(pkh_still = pap7c) %>% 
+  dplyr::rename(pkh_pct_hhrecip = pap8) 
+
+# recode cdata_program1 values
+cdata_program <- cdata_program %>%
+  mutate(pkh_since07, pkh_since07 = case_when(pkh_since07 == 3 ~ "no",
+                                              pkh_since07 == 1 ~ "yes",
+                                              TRUE ~ NA_character_)) %>% 
+  mutate(pkh_still, pkh_still = case_when(pkh_still == 3 ~ "no",
+                                          pkh_still == 1 ~ "yes",
+                                          TRUE ~ NA_character_))
+
+ 
+```
+
+```{r load and wrangle trust data}
+# trust, book 1c
+# load dataset bk1_tr.dta
+cdata_bk1_tr<- read_dta("bk1_tr.dta")
+cdata_conflict <- cdata_bk1_tr %>% 
+  dplyr::select(-idw) %>% 
+  dplyr::select(ea,                 # enumeration area (categorical)
+                commid14,           # community id (categorical)
+                trtype,             # Type of conflict
+                tr01)               # Has [&] occurred in this village since 2007?
+           #    tr04)               # Since 2007, has the number or this type of conflict been increasing, the same, or decreasing?
+  
+# rename cdata_conflict variables
+cdata_conflict <- cdata_conflict %>%  
+  dplyr::rename(cid = commid14) %>% 
+  dplyr::rename(conflict_since07 = tr01) 
+ # dplyr::rename(conflict_change_since07 = tr04) 
+  
+# recode cdata_conflict values
+cdata_conflict <- cdata_conflict %>%
+  mutate(conflict_since07, conflict_since07 = case_when(conflict_since07 == 3 ~ 0, #"no", 
+                                                        conflict_since07 == 1 ~ 1, #"yes",
+                                                        TRUE ~ as.numeric(NA))) 
+  # mutate(conflict_change_since07, conflict_change_since07 = case_when(conflict_change_since07 == 1 ~ "increasing",
+  #                                                          conflict_change_since07 == 2 ~ "same",
+  #                                                          conflict_change_since07 == 3 ~ "decreasing",
+  #                                                          TRUE ~ NA_character_)) 
+#recoding missing values
+cdata_conflict$conflict_since07[cdata_conflict$conflict_since07 == 8] <- NA
+
+# long to wide
+cdata_conflict1 <- cdata_conflict %>% 
+  spread(trtype, value = conflict_since07) 
+ # dplyr::select(-conflict_change_since07)
+
+# not observing 'conflict_change_since07' due to sparse data
+# cdata_conflict2 <- cdata_conflict %>% 
+#   spread(trtype, value = conflict_change_since07) %>% 
+#   dplyr::select(-conflict_since07)
+
+# aggregate conflict and conflict or not
+cdata_conflict1["conflict_sum"] <- apply(cdata_conflict1[3:9], 1, sum, na.rm = TRUE)
+cdata_conflict1["conflict_or_not"] <- as.integer(apply(cdata_conflict1[3:9], 1, any, na.rm = TRUE))
+# cdata_conflict2["conflict_sum"] <- apply(cdata_conflict2[3:9], 1, sum, na.rm = TRUE)
+# cdata_conflict2["conflict_or_not"] <- as.integer(apply(cdata_conflict2[3:9], 1, any, na.rm = TRUE))
+
+
+#drop V1 --> F
+cdata_conflict2 <- cdata_conflict1 %>% 
+  dplyr:: select(ea, cid, conflict_sum, conflict_or_not)
+```
+
+```{r load and wrangle response data}
+# load dataset bk1_tr.dta
+# cdata_bk1_ir<- read_dta("bk2.dta")
+# cdata_response <- cdata_bk1_ir %>% 
+#   dplyr::select(-idw) %>% 
+#   dplyr::select(ea,                 # enumeration area (categorical)
+#                 commid14,           # community id (categorical)
+#                 irtype)             # Respondent type
+
+```
+
+
+```{r merge program and trust}
+# merge data
+cdata <- merge(cdata_program, cdata_progcontrol, by = c("ea", "cid"), all = TRUE) 
+cdata <- merge(cdata, cdata_conflict2, by = c("ea", "cid"), all = TRUE) 
+
+write.csv(cdata, file = "cdata.csv")
+
+```
+
+```{r summary statistics, results = 'asis'}
+stargazer:: stargazer(cdata[cdata$pkh_since07 == "yes",], 
+          title = "Summary Statistics for Villages Receiving PKH since 2007",
+          type = 'latex',
+          header = FALSE)
+
+stargazer(cdata[cdata$pkh_since07 == "no",], 
+          title = "Summary Statistics for Villages NOT Receiving PKH since 2007",
+          type = 'latex',
+          header = FALSE)
+```
+
+```{r descriptive visuals}
+ ggplot(data = cdata) +
+   aes(y = conflict_sum,
+       x = pkh_since07) +
+   geom_boxplot() +
+   ggtitle("")
+
+```
+
+
+```{r lm1, lm2, lm3, results='asis', resize.height=0.5,resize.width=0.5}
+# dependent variable: aggregate conflict
+lm1 <- lm(conflict_sum ~ pkh_since07, data = cdata)
+lm2 <- lm(conflict_sum ~ pkh_since07 + otherprog_sum, data = cdata)
+lm3 <- lm(conflict_sum ~ pkh_pct_hhrecip, data = cdata)
+lm4 <- lm(conflict_sum ~ pkh_pct_hhrecip + otherprog_sum, data = cdata)
+
+
+stargazer::stargazer(lm1, lm2, lm3, lm4,
+                     header = FALSE,
+                     type = 'latex',
+                     title = "Linear Regressions: Sum of Conflicts on Whether or not Village Received PKH since 2007 (1-2); Sum of Conflicts on Percentage of PKH-receiving \n households in PKH-receiving \n villages since 2007 (3-4)")
+
+# ggplot(cdata, aes(x = pkh_since07, y = conflict_sum)) + 
+#   geom_point() +
+#   stat_smooth(method = "lm", col = "red")
+
+# ggplot(cdata, aes(x = pkh_still, y = conflict_sum)) + 
+#   geom_point() +
+#   stat_smooth(method = "lm", col = "red")
+
+ggplot(cdata, aes(x = pkh_pct_hhrecip, y = conflict_sum)) + 
+  geom_point() +
+  stat_smooth(method = "lm", col = "red") +
+  ggtitle("Figure 1: Linear regression of sum of conflict types in \n village on percentage of PKH-receiving households (among PKH-receiving  \n villages since 2007)") +
+  ylab("Sum of conflict types in village") +
+  xlab("Percentage of PKH-receiving households in PKH-receiving villages since 2007 (%)")
+
+
+```
+
+```{r glm1, glm2a, glm3, results='asis'}
+# dependent variable: conflict_or_not
+glm1 <- glm(conflict_or_not ~ pkh_since07, family = binomial, data = cdata)
+glm2 <- glm(conflict_or_not ~ pkh_since07 + otherprog_sum, family = binomial, data = cdata)
+glm3 <- glm(conflict_or_not ~ pkh_pct_hhrecip, family = binomial, data = cdata)
+glm4 <- glm(conflict_or_not ~ pkh_pct_hhrecip + otherprog_sum, family = binomial, data = cdata)
+
+
+
+stargazer::stargazer(glm1, glm2, glm3, glm4, 
+          header = FALSE,
+          type = 'latex',
+          title = "Logistic Regressions: Conflict or not on Whether or not Village Received PKH since 2007 (1-2); Conflict or not on Percentage of PKH-receiving \n households in PKH-receiving \n villages since 2007 (3-4)")
+
+
+plot1 <- plot_model(glm1, type = "pred", terms = "pkh_since07", order.terms = c(no, yes)) +
+  ggtitle("Figure 2: Predicted probability of \n village conflict by PKH \n -implementation since 2007 \n") +
+  ylab("Predicted probability of village conflict") +
+  xlab("Whether or not the village received \n PKH since 2007")
+
+plot2 <- plot_model(glm2, type = "pred", terms = "pkh_since07") +
+  ggtitle("Figure 3: Predicted probability of \n village conflict by PKH \n -implementation since 2007 \n (with Control)") +
+  ylab("Predicted probability of village conflict") +
+  xlab("Whether or not the village received \n PKH since 2007")
+
+plot3 <- plot_model(glm3, type = "pred", terms = "pkh_pct_hhrecip") +
+  ggtitle("Figure 4: Predicted probability of \n village conflict by percentage of \n PKH-receiving households \n (among PKH-receiving \n villages since 2007) \n") +
+  ylab("Predicted probability of village conflict") +
+  xlab("Percentage of PKH-receiving \n households in PKH-receiving \n villages since 2007 (%)")
+
+plot4 <- plot_model(glm4, type = "pred", terms = "pkh_pct_hhrecip") +
+  ggtitle("Figure 5: Predicted probability of \n village conflict by percentage of \n PKH-receiving households \n (among PKH-receiving \n villages since 2007) \n (with Control)") +
+  ylab("Predicted probability of village conflict") +
+  xlab("Percentage of PKH-receiving \n households in PKH-receiving \n villages since 2007 (%)")
+
+grid.arrange(plot1, plot2, ncol = 2)
+grid.arrange(plot3, plot4, ncol = 2)
+
+          
+```
+
+
+
+The following equations represent our full models:
+
+  $\hat{y_i} =  \hat{\beta_0} + \hat{\beta_1}pkhsince07_i + \epsilon_i$
+  
+  
+  $\hat{y_i} =  \hat{\beta_0} + \hat{\beta_1}pkhsince07_i + \hat{\beta_2}otherprogsum_i + \epsilon_i$
+  
+  
+  $\hat{y_i} =  \hat{\beta_0} + \hat{\beta_1}pkhpcthhrecip + \epsilon_i$
+  
+  
+  $\hat{y_i} =  \hat{\beta_0} + \hat{\beta_1}pkhpcthhrecip + \hat{\beta_2}otherprogsum_i + \epsilon_i$
+  
+  
+```
+
